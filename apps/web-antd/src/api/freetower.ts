@@ -36,19 +36,20 @@ export async function getFtToken(clientId?: string, secret?: string): Promise<st
   // 使用传入的参数或环境变量
   const finalClientId = clientId || import.meta.env.VITE_FT_CLITENT_ID;
   const finalSecret = secret || import.meta.env.VITE_FT_SECRET;
-
   try {
     const response = await ftClient.post('/auth/api/token', {
       clientId: finalClientId,
       secret: finalSecret,
     });
 
-    if (response.data && response.data.access_token) {
-      cachedToken = response.data.access_token;
+    const resp = response.data;
+    console.log('获取飞驼Token响应:', resp.data,resp.data.access_token);
+    if (resp.data && resp.data.access_token) {
+      cachedToken = resp.data.access_token;
       // 设置token过期时间（提前5分钟刷新）
-      const expiresIn = response.data.expires_in || 7200; // 默认2小时
+      const expiresIn = resp.data.expires_in || 7200; // 默认2小时
       tokenExpireTime = Date.now() + (expiresIn - 300) * 1000;
-      return cachedToken;
+      return cachedToken!;
     }
 
     throw new Error('获取Token失败: 响应中没有access_token');

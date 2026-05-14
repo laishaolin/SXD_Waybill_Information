@@ -190,7 +190,7 @@ catalogs:
       specifier: ^7.0.1
       version: 7.0.1
     axios:
-      specifier: ^1.15.0
+      specifier: ^1.15.2
       version: 1.15.2
     axios-mock-adapter:
       specifier: ^2.1.0
@@ -706,6 +706,9 @@ importers:
       ant-design-vue:
         specifier: 'catalog:'
         version: 4.2.6(vue@3.5.33(typescript@6.0.3))
+      axios:
+        specifier: 'catalog:'
+        version: 1.15.2
       dayjs:
         specifier: 'catalog:'
         version: 1.11.20

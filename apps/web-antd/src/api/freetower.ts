@@ -6,7 +6,10 @@
 import axios from 'axios';
 
 // 飞驼 API 基础URL
-const FT_API_BASE_URL = 'http://openapi.freightower.com';
+// 开发环境使用代理，生产环境使用完整URL
+const FT_API_BASE_URL = import.meta.env.DEV
+  ? '/freetower-api'
+  : 'http://openapi.freightower.com';
 
 // 创建飞驼 API 客户端
 const ftClient = axios.create({
@@ -18,8 +21,61 @@ const ftClient = axios.create({
 });
 
 // Token 缓存
+const TOKEN_CACHE_KEY = 'freetower_token';
+const TOKEN_EXPIRE_KEY = 'freetower_token_expire';
+
 let cachedToken: string | null = null;
 let tokenExpireTime: number = 0;
+
+/**
+ * 从本地存储加载Token
+ */
+function loadTokenFromStorage(): void {
+  try {
+    const storedToken = localStorage.getItem(TOKEN_CACHE_KEY);
+    const storedExpireTime = localStorage.getItem(TOKEN_EXPIRE_KEY);
+
+    if (storedToken && storedExpireTime) {
+      const expireTime = parseInt(storedExpireTime, 10);
+      // 检查token是否仍然有效
+      if (Date.now() < expireTime) {
+        cachedToken = storedToken;
+        tokenExpireTime = expireTime;
+      } else {
+        // token已过期，清除本地存储
+        clearTokenStorage();
+      }
+    }
+  } catch (error) {
+    console.warn('从本地存储加载Token失败:', error);
+  }
+}
+
+/**
+ * 将Token保存到本地存储
+ * @param token - Token字符串
+ * @param expireTime - 过期时间戳
+ */
+function saveTokenToStorage(token: string, expireTime: number): void {
+  try {
+    localStorage.setItem(TOKEN_CACHE_KEY, token);
+    localStorage.setItem(TOKEN_EXPIRE_KEY, expireTime.toString());
+  } catch (error) {
+    console.warn('保存Token到本地存储失败:', error);
+  }
+}
+
+/**
+ * 清除本地存储的Token
+ */
+function clearTokenStorage(): void {
+  try {
+    localStorage.removeItem(TOKEN_CACHE_KEY);
+    localStorage.removeItem(TOKEN_EXPIRE_KEY);
+  } catch (error) {
+    console.warn('清除本地存储Token失败:', error);
+  }
+}
 
 /**
  * 获取飞驼 API Token
@@ -27,7 +83,15 @@ let tokenExpireTime: number = 0;
  * @param secret - 客户端密钥
  * @returns Token 字符串
  */
-export async function getFtToken(clientId?: string, secret?: string): Promise<string> {
+export async function getFtToken(
+  clientId?: string,
+  secret?: string,
+): Promise<string> {
+  // 首次加载时尝试从本地存储恢复token
+  if (!cachedToken) {
+    loadTokenFromStorage();
+  }
+
   // 检查缓存的token是否仍然有效
   if (cachedToken && Date.now() < tokenExpireTime) {
     return cachedToken;
@@ -43,13 +107,18 @@ export async function getFtToken(clientId?: string, secret?: string): Promise<st
     });
 
     const resp = response.data;
-    console.log('获取飞驼Token响应:', resp.data,resp.data.access_token);
+    console.log('获取飞驼Token响应:', resp.data, resp.data.access_token);
     if (resp.data && resp.data.access_token) {
-      cachedToken = resp.data.access_token;
+      const newToken = resp.data.access_token;
+      cachedToken = newToken;
       // 设置token过期时间（提前5分钟刷新）
       const expiresIn = resp.data.expires_in || 7200; // 默认2小时
       tokenExpireTime = Date.now() + (expiresIn - 300) * 1000;
-      return cachedToken!;
+
+      // 保存到本地存储
+      saveTokenToStorage(newToken, tokenExpireTime);
+
+      return newToken;
     }
 
     throw new Error('获取Token失败: 响应中没有access_token');
@@ -65,6 +134,8 @@ export async function getFtToken(clientId?: string, secret?: string): Promise<st
 export function clearFtToken(): void {
   cachedToken = null;
   tokenExpireTime = 0;
+  // 同时清除本地存储
+  clearTokenStorage();
 }
 
 /**

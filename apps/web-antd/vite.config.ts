@@ -13,6 +13,13 @@ export default defineConfig(async () => {
             target: 'http://localhost:5320/api',
             ws: true,
           },
+          // 飞驼 API 代理
+          '/freetower-api': {
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/freetower-api/, ''),
+            target: 'http://openapi.freightower.com',
+            ws: true,
+          },
         },
       },
     },

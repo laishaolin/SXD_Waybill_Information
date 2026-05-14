@@ -477,7 +477,7 @@ function viewDetail(waybill: Waybill) {
 
   // eslint-disable-next-line unicorn/prefer-structured-clone
   editingWaybill.value = JSON.parse(JSON.stringify(waybill));
- 
+
   // 同步到 editForm
   Object.assign(editForm, waybill);
   isEditing.value = true;

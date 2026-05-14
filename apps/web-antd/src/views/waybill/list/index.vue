@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { ref, reactive } from 'vue';
-import { Card, Button, Modal, Input as AInput, message } from 'ant-design-vue';
+import { reactive, ref } from 'vue';
+
 import { IconifyIcon } from '@vben/icons';
+
+import { Input as AInput, Button, Card, message, Modal } from 'ant-design-vue';
+
 import { queryContainerTrack } from '#/api/freetower';
+
 import './styles.css';
 
 interface WaybillNode {
@@ -28,7 +32,9 @@ interface Waybill {
   etd: string; // ETD
   ata: string; // ATA
   eta: string; // ETA
-  deliveryDate: string; // 交付日期
+  atd: string; // ATD
+  heavyPickupDate: string; // 提柜(货)
+  deliveryDate: string; // 派送日期，后台人工填写
   returnEmptyDate: string; // 返空日期
   billNo?: string; // MBL编号
   containerNo?: string; // 集装箱编号
@@ -42,6 +48,48 @@ interface ftStatus {
   isEsti: string; // N就代表实际发生的节点,Y就说明是 预计发生的
 }
 
+// 飞驼各阶段与对应的日期
+const stepInfo = [
+  { step: 1, ft_name: '提空箱', name: '提空日期', label: '等待到达起运港' }, // 1、等待到达起运港
+  { step: 2, ft_name: '进场', name: '还重日期', label: '等待到达起运港' },
+  { step: 2, ft_name: '卡车进场', name: '卡车进场日期', label: '已到达起运港' }, // 2、已到达起运港
+  { step: 2, ft_name: '装船', name: '装船日期', label: '已到达起运港' }, // 2、已到达起运港
+  { step: 3, ft_name: '离港', name: '离港日期', label: '前往目的港途中' }, // 3、前往目的港途中
+  {
+    step: 3,
+    ft_name: '中转抵港',
+    name: '预计到港日期/实际到港日期',
+    label: '前往目的港途中',
+  },
+  {
+    step: 3,
+    ft_name: '中转卸船',
+    name: '中转卸船日期',
+    label: '前往目的港途中',
+  },
+  {
+    step: 3,
+    ft_name: '中转离港',
+    name: '预计离港日期/实际离港日期',
+    label: '前往目的港途中',
+  },
+  {
+    step: 3,
+    ft_name: '交货地抵达',
+    name: '交货地抵达日期',
+    label: '前往目的港途中',
+  },
+  {
+    step: 4,
+    ft_name: '抵港',
+    name: '预计到港日期/实际到港日期',
+    label: '已到达目的港',
+  }, // 4、已到达目的港
+  { step: 4, ft_name: '卸船', name: '卸船日期', label: '已到达目的港' },
+  { step: 5, ft_name: '提柜(货)', name: '重柜出场日期', label: '尾端派送' }, // 5、尾端派送
+  { step: 6, ft_name: '还空箱', name: '空柜进港日期', label: '已送达' }, // 6、已送达
+];
+
 // 飞驼的containers.status节点状态是否包含某个状态
 // 提空箱: statusHasFlag(result.data.result?.containers[0].status, '提空箱')
 // 还重日: statusHasFlag(result.data.result?.containers[0].status, '进场')
@@ -54,6 +102,7 @@ interface ftStatus {
 // 中转离港: statusHasFlag(result.data.result?.containers[0].status, '中转离港')
 // 交货地抵达: statusHasFlag(result.data.result?.containers[0].status, '交货地抵达')
 // 抵港: statusHasFlag(result.data.result?.containers[0].status, '抵港')
+// 卸船: statusHasFlag(result.data.result?.containers[0].status, '卸船')
 // 提柜(货): statusHasFlag(result.data.result?.containers[0].status, '提柜(货)')
 // 还空箱: statusHasFlag(result.data.result?.containers[0].status, '还空箱')
 function statusHasFlag(status: ftStatus[], descriptionCn: string) {
@@ -68,13 +117,53 @@ function statusHasFlag(status: ftStatus[], descriptionCn: string) {
   return null;
 }
 
+// 获取最后一个实际发生的节点
 function getLastFlag(status: ftStatus[]) {
-  const rs = status[status.length - 1];
+  const new_status = status.toReversed();
+  const rs = new_status.find((item) => item.isEsti === 'N');
+
   return {
     eventTime: rs?.eventTime,
     descriptionCn: rs?.descriptionCn,
     isEsti: rs?.isEsti, // N就代表实际发生的节点,Y就说明是 预计发生的
   };
+}
+
+interface datesInfo {
+  type: number;
+  etd: string;
+  atd: string;
+  atd_ais: string;
+  eta: string;
+  ata: string;
+  ata_ais: string;
+  disc: string;
+}
+function getPlacesType(places: datesInfo[]): datesInfo {
+  const type_2: datesInfo =
+    places.find((item) => item.type === 2) ||
+    ({ type: 0, etd: '', atd: '', eta: '', ata: '' } as datesInfo);
+  const type_4: datesInfo =
+    places.find((item) => item.type === 4) ||
+    ({ type: 0, etd: '', atd: '', eta: '', ata: '' } as datesInfo);
+  const di: datesInfo = {
+    type: 0,
+    etd: type_2.etd, // 预计离港时间
+    atd: type_2.atd || type_2.atd_ais, // atd为空取atd_ais 实际离港时间
+    eta: type_4.eta, // 预计到港时间
+    ata:
+      type_4.ata ||
+      type_4.ata_ais ||
+      type_4.disc ||
+      type_2.ata ||
+      type_2.ata_ais ||
+      type_2.disc ||
+      '', // 实际到港时间
+    atd_ais: '',
+    ata_ais: '',
+    disc: '',
+  };
+  return di;
 }
 
 const waybills = ref<Waybill[]>([
@@ -118,6 +207,8 @@ const waybills = ref<Waybill[]>([
     ],
     returnHeavyDate: '',
     crd: '',
+    atd: '',
+    heavyPickupDate: '',
   },
   {
     id: '2',
@@ -134,9 +225,9 @@ const waybills = ref<Waybill[]>([
     eta: '2026-06-20',
     deliveryDate: '',
     returnEmptyDate: '',
-    billNo: 'WHLC026G516022',
-    containerNo: 'WHSU5907860',
-    carrierCode: 'WHL',
+    billNo: 'SHAE42758300',
+    containerNo: 'TEMU4072072',
+    carrierCode: 'HMM',
     nodes: [
       {
         label: '公司名称',
@@ -159,6 +250,8 @@ const waybills = ref<Waybill[]>([
     ],
     returnHeavyDate: '',
     crd: '',
+    atd: '',
+    heavyPickupDate: '',
   },
   {
     id: '3',
@@ -172,47 +265,6 @@ const waybills = ref<Waybill[]>([
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
     ata: '',
-    eta: '2026-06-20',
-    deliveryDate: '',
-    returnEmptyDate: '',
-    billNo: 'WHLC026G516022',
-    containerNo: 'WHSU5907860',
-    carrierCode: 'WHL',
-    nodes: [
-      {
-        label: '公司名称',
-        times: [
-          { label: '货好时间', value: '2026-05-01' },
-          { label: '提空日期', value: '2026-05-05' },
-        ],
-      },
-      {
-        label: '起运港',
-        port: 'YANTIAN',
-        times: [{ label: 'ATD', value: '2026-05-13' }],
-      },
-      {
-        label: '目的港',
-        port: 'ROTTERDAM',
-        times: [{ label: 'ETA', value: '2026-06-20' }],
-      },
-      { label: '收货人名称', times: [] },
-    ],
-    returnHeavyDate: '',
-    crd: '',
-  },
-  {
-    id: '4',
-    companyName: '广州市尚雷仕卫浴有限公司',
-    recipientName: 'SUPERIOR WELLNESS LTD',
-    originPort: 'YANTIAN',
-    destPort: 'ROTTERDAM',
-    currentStatus: 4,
-    statusLabel: '4、已到达目的港',
-    goodsReadyDate: '2026-05-01',
-    emptyPickupDate: '2026-05-05',
-    etd: '2026-05-11',
-    ata: '2026-06-25',
     eta: '2026-06-20',
     deliveryDate: '',
     returnEmptyDate: '',
@@ -235,12 +287,57 @@ const waybills = ref<Waybill[]>([
       {
         label: '目的港',
         port: 'ROTTERDAM',
+        times: [{ label: 'ETA', value: '2026-06-20' }],
+      },
+      { label: '收货人名称', times: [] },
+    ],
+    returnHeavyDate: '',
+    crd: '',
+    atd: '',
+    heavyPickupDate: '',
+  },
+  {
+    id: '4',
+    companyName: '广州市尚雷仕卫浴有限公司',
+    recipientName: 'SUPERIOR WELLNESS LTD',
+    originPort: 'YANTIAN',
+    destPort: 'ROTTERDAM',
+    currentStatus: 4,
+    statusLabel: '4、已到达目的港',
+    goodsReadyDate: '2026-05-01',
+    emptyPickupDate: '2026-05-05',
+    etd: '2026-05-11',
+    ata: '2026-06-25',
+    eta: '2026-06-20',
+    deliveryDate: '',
+    returnEmptyDate: '',
+    billNo: '269549316',
+    containerNo: 'MRSU9993255',
+    carrierCode: 'MSK',
+    nodes: [
+      {
+        label: '公司名称',
+        times: [
+          { label: '货好时间', value: '2026-05-01' },
+          { label: '提空日期', value: '2026-05-05' },
+        ],
+      },
+      {
+        label: '起运港',
+        port: 'YANTIAN',
+        times: [{ label: 'ATD', value: '2026-05-13' }],
+      },
+      {
+        label: '目的港',
+        port: 'ROTTERDAM',
         times: [{ label: 'ATA', value: '2026-06-25' }],
       },
       { label: '收货人名称', times: [] },
     ],
     returnHeavyDate: '',
     crd: '',
+    atd: '',
+    heavyPickupDate: '',
   },
   {
     id: '5',
@@ -257,9 +354,9 @@ const waybills = ref<Waybill[]>([
     eta: '2026-06-20',
     deliveryDate: '2026-06-29',
     returnEmptyDate: '2026-06-29',
-    billNo: 'WHLC026G516022',
-    containerNo: 'WHSU5907860',
-    carrierCode: 'WHL',
+    billNo: '266233782',
+    containerNo: 'CAAU9015295',
+    carrierCode: 'MSK',
     nodes: [
       {
         label: '公司名称',
@@ -285,6 +382,8 @@ const waybills = ref<Waybill[]>([
     ],
     returnHeavyDate: '',
     crd: '',
+    atd: '',
+    heavyPickupDate: '',
   },
   {
     id: '6',
@@ -301,9 +400,9 @@ const waybills = ref<Waybill[]>([
     eta: '2026-06-20',
     deliveryDate: '2026-06-29',
     returnEmptyDate: '2026-06-29',
-    billNo: 'WHLC026G516022',
-    containerNo: 'WHSU5907860',
-    carrierCode: 'WHL',
+    billNo: 'SHCT5A692100',
+    containerNo: 'SMCU1122724',
+    carrierCode: 'SML',
     nodes: [
       {
         label: '公司名称',
@@ -335,6 +434,8 @@ const waybills = ref<Waybill[]>([
     ],
     returnHeavyDate: '',
     crd: '',
+    atd: '',
+    heavyPickupDate: '',
   },
 ]);
 
@@ -354,25 +455,29 @@ const ft_waybill = ref<Waybill>({
   etd: '',
   ata: '',
   eta: '',
+  atd: '',
   deliveryDate: '',
   returnEmptyDate: '',
   billNo: '',
   containerNo: '',
   carrierCode: '',
   status: [],
-} as Waybill); // 初始化一个完整的 Waybill 对象
+} as unknown as Waybill); // 初始化一个完整的 Waybill 对象
 
 const detailVisible = ref(false);
-const selectedWaybill = ref<Waybill | null>(null);
+const selectedWaybill = ref<null | Waybill>(null);
 const isEditing = ref(false);
-const editingWaybill = ref<Waybill | null>(null);
+const editingWaybill = ref<null | Waybill>(null);
 
 // 创建一个响应式的编辑对象
 const editForm = reactive<Partial<Waybill>>({});
 
 function viewDetail(waybill: Waybill) {
   selectedWaybill.value = waybill;
+
+  // eslint-disable-next-line unicorn/prefer-structured-clone
   editingWaybill.value = JSON.parse(JSON.stringify(waybill));
+ 
   // 同步到 editForm
   Object.assign(editForm, waybill);
   isEditing.value = true;
@@ -476,6 +581,8 @@ function saveEdit() {
     }
     isEditing.value = false;
     detailVisible.value = false;
+
+    searchContainer(); // 飞驼查询
     // 清空 editForm
     Object.keys(editForm).forEach(
       (key) => delete editForm[key as keyof Waybill],
@@ -502,9 +609,9 @@ async function searchContainer() {
       editForm.carrierCode,
     );
 
-    if (result.statusCode === 20000 || result.statusCode === 0) {
+    if (result.statusCode === 20_000 || result.statusCode === 0) {
       message.success({ content: '查询成功', key: 'container-search' });
-      console.log('集装箱跟踪结果:', result);
+      // console.log('集装箱跟踪结果:', result);
 
       // 可以在这里显示查询结果
       if (result.data?.result) {
@@ -513,50 +620,109 @@ async function searchContainer() {
         );
         // selectedWaybill
 
+        const dates = getPlacesType(result.data.result?.places);
         // ft_waybill.value = { ...editingWaybill.value, ...editForm } as Waybill;
+        const new_val = {
+          emptyPickupDate: statusHasFlag(
+            result.data.result?.containers[0].status,
+            '提空箱',
+          )?.eventTime, // 提空日期
+          returnHeavyDate: statusHasFlag(
+            result.data.result?.containers[0].status,
+            '进场',
+          )?.eventTime, // 还重日期
+          atd: statusHasFlag(result.data.result?.containers[0].status, '离港')
+            ? dates.atd
+            : dates.etd, // 如果还没有开船ETD，已经开船就ATD
+          eta: dates.eta, // 预计到港时间
+          ata: dates.ata, // 实际到港时间
+          etd: dates.etd, // 预计离港时间
+          heavyPickupDate: statusHasFlag(
+            result.data.result?.containers[0].status,
+            '提柜(货)',
+          )?.eventTime, // 提重日期
+          returnEmptyDate: statusHasFlag(
+            result.data.result?.containers[0].status,
+            '还空箱',
+          )?.eventTime, // 还空日期
+        };
+
+        let statusLabel = '等待到达起运港'; // 默认状态
+        // let step = 1;
+        stepInfo.map((item) => {
+          // 计算最新状态
+          // console.log('检查状态-map:', item.step,item.ft_name);
+          if (
+            statusHasFlag(
+              result.data?.result?.containers[0].status,
+              item.ft_name,
+            )?.isEsti === 'N'
+          ) {
+            // console.log('检查状态-if-1:', item.step,item.ft_name);
+            // if(item.step > step){
+            statusLabel = item.label;
+            // step = item.step;
+            // console.log('检查状态-if-2:', item.step, item.ft_name);
+            // }
+          }
+          return statusLabel;
+        });
 
         ft_waybill.value = {
           ...editingWaybill.value,
           ...editForm,
-          step: getLastFlag(result.data.result?.containers[0].status)[
-            'descriptionCn'
-          ],
+          ...new_val,
+          statusLabel,
+          step: getLastFlag(result.data.result?.containers[0].status)
+            .descriptionCn,
           status: result.data.result?.containers[0].status,
-          emptyPickupDate:
-            result.data.result?.containers[0].status[0].eventTime,
-          returnHeavyDate:
-            result.data.result?.containers[0].status[1].eventTime,
           // 初始化 nodes 数组结构
           nodes: [
             {
               label: '公司名称',
               times: [
                 { label: '货好时间', value: editForm.goodsReadyDate || '' },
-                {
-                  label: '提空日期',
-                  value:
-                    result.data.result?.containers[0].status[0].eventTime || '',
-                },
+                { label: '提空日期', value: new_val.emptyPickupDate || '' },
               ],
             },
             {
               label: '起运港',
               port: editForm.originPort || '',
               times: [
+                { label: '还重日期', value: new_val.returnHeavyDate || '' },
                 {
-                  label: '还重日期',
-                  value:
-                    result.data.result?.containers[0].status[1].eventTime || '',
+                  label:
+                    statusHasFlag(
+                      result.data.result?.containers[0].status,
+                      '离港',
+                    )?.isEsti === 'Y'
+                      ? 'ETD'
+                      : 'ATD',
+                  value: new_val.etd || '',
                 },
-                { label: 'ETD', value: editForm.etd || '' },
               ],
             },
             {
               label: '目的港',
               port: editForm.destPort || '',
-              times: [{ label: 'ETA', value: editForm.eta || '' }],
+              times: [
+                {
+                  label: new_val.ata ? 'ATA' : 'ETA',
+                  value: new_val.ata || new_val.eta,
+                },
+                { label: '提重日期', value: new_val.heavyPickupDate || '' },
+              ],
             },
-            { label: '收货人名称', times: [] },
+            {
+              label: '收货人名称',
+              times: [
+                {
+                  label: '派送日期',
+                  value: editingWaybill.value?.deliveryDate || '',
+                },
+                { label: '还空日期', value: new_val.returnEmptyDate || '' },
+              ],
+            },
           ],
         } as Waybill;
 
@@ -565,12 +731,8 @@ async function searchContainer() {
         // ft_waybill.value.status = result.data.result?.containers[0].status;
         // ft_waybill.value.emptyPickupDate = result.data.result?.containers[0].status[0].eventTime;
         // ft_waybill.value.returnHeavyDate = result.data.result?.containers[0].status[1].eventTime;
-        console.log('更新后台的ft_waybill', ft_waybill.value);
-        console.log(
-          '是否包含指定状态',
-          '提空箱',
-          statusHasFlag(result.data.result?.containers[0].status, '提空箱'),
-        );
+        // console.log('更新后台的ft_waybill', ft_waybill.value);
+        // console.log('是否包含指定状态','提空箱',statusHasFlag(result.data.result?.containers[0].status, '提空箱'));
       }
     } else {
       message.error({
@@ -593,24 +755,31 @@ async function searchContainer() {
 function getNodeStatus(waybill: Waybill, nodeIndex: number): string {
   const status = waybill.currentStatus;
   switch (status) {
-    case 1:
+    case 1: {
       return nodeIndex === 0 ? 'active' : 'inactive';
-    case 2:
+    }
+    case 2: {
       return nodeIndex < 2 ? 'completed' : 'inactive';
-    case 3:
+    }
+    case 3: {
       if (nodeIndex < 2) return 'completed';
       if (nodeIndex === 2) return 'active';
       return 'inactive';
-    case 4:
+    }
+    case 4: {
       return nodeIndex < 3 ? 'completed' : 'inactive';
-    case 5:
+    }
+    case 5: {
       if (nodeIndex < 3) return 'completed';
       if (nodeIndex === 3) return 'active';
       return 'inactive';
-    case 6:
+    }
+    case 6: {
       return 'completed';
-    default:
+    }
+    default: {
       return 'inactive';
+    }
   }
 }
 
@@ -620,24 +789,31 @@ function getNodeStatus(waybill: Waybill, nodeIndex: number): string {
 function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
   const status = waybill.currentStatus;
   switch (status) {
-    case 1:
+    case 1: {
       return 'inactive';
-    case 2:
+    }
+    case 2: {
       return segmentIndex < 1 ? 'active' : 'inactive';
-    case 3:
+    }
+    case 3: {
       if (segmentIndex === 0) return 'active';
       if (segmentIndex === 1) return 'half';
       return 'inactive';
-    case 4:
+    }
+    case 4: {
       return segmentIndex < 2 ? 'active' : 'inactive';
-    case 5:
+    }
+    case 5: {
       if (segmentIndex < 2) return 'active';
       if (segmentIndex === 2) return 'half';
       return 'inactive';
-    case 6:
+    }
+    case 6: {
       return 'active';
-    default:
+    }
+    default: {
       return 'inactive';
+    }
   }
 }
 </script>
@@ -653,11 +829,11 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
       <div class="detail-grid">
         <div class="detail-item">
           <span class="detail-label">MBL号</span>
-          <a-input v-model:value="editForm.billNo" placeholder="请输入MBL号" />
+          <AInput v-model:value="editForm.billNo" placeholder="请输入MBL号" />
         </div>
         <div class="detail-item">
           <span class="detail-label">集装箱号</span>
-          <a-input
+          <AInput
             v-model:value="editForm.containerNo"
             placeholder="请输入集装箱号"
             style="flex: 1"
@@ -665,7 +841,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
         </div>
         <div class="detail-item">
           <span class="detail-label">船公司代码</span>
-          <a-input
+          <AInput
             v-model:value="editForm.carrierCode"
             placeholder="请输入船公司代码"
           />
@@ -768,7 +944,6 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
 
       <Card :bordered="false" class="waybill-card">
         <span class="waybill-status-label">{{ ft_waybill.statusLabel }}</span>
-
         <!-- 横向进度条 - 箭头连线 -->
         <div class="shipping-progress">
           <!-- 左侧：公司名称 -->
@@ -842,6 +1017,24 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
           </div>
         </div>
       </Card>
+
+      <Card :bordered="false" class="waybill-card">
+        <h1><span class="waybill-status-label">飞驼原始数据</span></h1>
+        <div style="display: flex">
+          <div
+            style="flex: 1"
+            v-for="(status, idx) in ft_waybill.status?.reverse()"
+            :key="idx"
+          >
+            <div style="display: grid" id="status-{{ idx }}">
+              <span class="waybill-status-label">{{ status.descriptionCn }}{{ status.isEsti }}</span>
+              <span class="waybill-status-label">{{
+                status.eventTime.substring(0, 10)
+              }}</span>
+            </div>
+          </div>
+        </div>
+      </Card>
     </div>
 
     <!-- 详情弹窗 -->
@@ -861,7 +1054,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
           <div class="detail-grid">
             <div class="detail-item">
               <span class="detail-label">公司名称</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.companyName"
                 placeholder="请输入公司名称"
@@ -872,7 +1065,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">起运港</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.originPort"
                 placeholder="请输入起运港"
@@ -883,7 +1076,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">目的港</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.destPort"
                 placeholder="请输入目的港"
@@ -894,7 +1087,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">收货人</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.recipientName"
                 placeholder="请输入收货人"
@@ -911,7 +1104,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
           <div class="detail-grid">
             <div class="detail-item">
               <span class="detail-label">货好时间</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.goodsReadyDate"
                 type="date"
@@ -923,7 +1116,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">提空日期</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.emptyPickupDate"
                 type="date"
@@ -935,7 +1128,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">还重日期</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.returnHeavyDate"
                 type="date"
@@ -947,7 +1140,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">ETD</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.etd"
                 type="date"
@@ -959,7 +1152,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">ETA</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.eta"
                 type="date"
@@ -971,7 +1164,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">ATA</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.ata"
                 type="date"
@@ -983,7 +1176,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">派送日期</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.deliveryDate"
                 type="date"
@@ -995,7 +1188,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
             <div class="detail-item">
               <span class="detail-label">还空日期</span>
-              <a-input
+              <AInput
                 v-if="isEditing"
                 v-model:value="editForm.returnEmptyDate"
                 type="date"

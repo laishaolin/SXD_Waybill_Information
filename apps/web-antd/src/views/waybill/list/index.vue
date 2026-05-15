@@ -7,6 +7,7 @@ import { Input as AInput, Button, Card, message, Modal } from 'ant-design-vue';
 
 import { queryContainerTrack } from '#/api/freetower';
 
+import RouteMap from './RouteMap.vue';
 import './styles.css';
 
 interface WaybillNode {
@@ -40,6 +41,20 @@ interface Waybill {
   containerNo?: string; // 集装箱编号
   carrierCode?: string; // 运输公司代码
   status?: any[];
+  // 航线数据
+  routeName?: string; // 航线名称
+  totalDays?: number; // 总天数
+  routePorts?: RoutePort[]; // 航线港口列表
+}
+
+// 航线节点数据
+interface RoutePort {
+  nameCn: string;
+  nameEn: string;
+  eventTime?: string;
+  isEsti?: string; // Y=预计(灰色), N=实际
+  isCompleted?: boolean;
+  isCurrent?: boolean;
 }
 
 interface ftStatus {
@@ -131,6 +146,9 @@ function getLastFlag(status: ftStatus[]) {
 
 interface datesInfo {
   type: number;
+  nameCn?: string;
+  nameEn?: string;
+  days?: number;
   etd: string;
   atd: string;
   atd_ais: string;
@@ -164,6 +182,47 @@ function getPlacesType(places: datesInfo[]): datesInfo {
     disc: '',
   };
   return di;
+}
+
+/**
+ * 从飞驼 API 的 status 数据中提取航线节点信息
+ * @param status - 飞驼 API 返回的状态列表
+ * @returns 航线节点数据
+ */
+function extractRoutePorts(status: ftStatus[]): RoutePort[] {
+  if (!status || status.length === 0) return [];
+
+  // 按时间排序状态
+  const sorted = [...status].sort(
+    (a, b) =>
+      new Date(a.eventTime || '').getTime() -
+      new Date(b.eventTime || '').getTime(),
+  );
+
+  // 获取最后一个实际发生的状态索引
+  let lastActualIndex = -1;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (sorted[i]?.isEsti === 'N') {
+      lastActualIndex = i;
+      break;
+    }
+  }
+
+  return sorted.map((item, index) => {
+    // 已完成：实际发生的节点 (isEsti === 'N')
+    const isCompleted = item.isEsti === 'N';
+    // 当前状态：最后一个实际发生的节点
+    const isCurrent = index === lastActualIndex;
+
+    return {
+      nameCn: item.descriptionCn || '',
+      nameEn: item.isEsti === 'Y' ? '预计' : '实际',
+      eventTime: item.eventTime,
+      isEsti: item.isEsti,
+      isCompleted,
+      isCurrent,
+    };
+  });
 }
 
 const waybills = ref<Waybill[]>([
@@ -375,7 +434,7 @@ const waybills = ref<Waybill[]>([
         port: 'ROTTERDAM',
         times: [
           { label: 'ATA', value: '2026-06-25' },
-          { label: '提空日期', value: '2026-06-28' },
+          { label: '提重日期', value: '2026-06-28' },
         ],
       },
       { label: '收货人名称', times: [] },
@@ -421,7 +480,7 @@ const waybills = ref<Waybill[]>([
         port: 'ROTTERDAM',
         times: [
           { label: 'ATA', value: '2026-06-25' },
-          { label: '提空日期', value: '2026-06-28' },
+          { label: '提重日期', value: '2026-06-28' },
         ],
       },
       {
@@ -648,10 +707,13 @@ async function searchContainer() {
         };
 
         let statusLabel = '等待到达起运港'; // 默认状态
+
+        // stepInfo.sort((a, b) => new Date(a.eventTime || '').getTime() - new Date(b.eventTime || '').getTime());
+
         // let step = 1;
         stepInfo.map((item) => {
           // 计算最新状态
-          // console.log('检查状态-map:', item.step,item.ft_name);
+          console.log('检查状态-map:', item.step,item.ft_name);
           if (
             statusHasFlag(
               result.data?.result?.containers[0].status,
@@ -662,11 +724,29 @@ async function searchContainer() {
             // if(item.step > step){
             statusLabel = item.label;
             // step = item.step;
-            // console.log('检查状态-if-2:', item.step, item.ft_name);
+            console.log('检查状态-if-2:', item.step, item.ft_name);
             // }
           }
           return statusLabel;
         });
+
+
+        const status = result.data.result?.containers[0].status.sort((a: { eventTime: any; }, b: { eventTime: any; }) => new Date(a.eventTime || '').getTime() - new Date(b.eventTime || '').getTime());
+
+        // 从 status 数据中提取航线节点信息
+        const routePorts = extractRoutePorts(status || []);
+
+        // 计算总天数（通过第一个和最后一个节点的时间差）
+        let totalDays = 0;
+        if (routePorts.length >= 2) {
+          const firstPort = routePorts[0];
+          const lastPort = routePorts[routePorts.length - 1];
+          if (firstPort && lastPort && firstPort.eventTime && lastPort.eventTime) {
+            const firstTime = new Date(firstPort.eventTime).getTime();
+            const lastTime = new Date(lastPort.eventTime).getTime();
+            totalDays = Math.round((lastTime - firstTime) / (1000 * 60 * 60 * 24));
+          }
+        }
 
         ft_waybill.value = {
           ...editingWaybill.value,
@@ -675,7 +755,10 @@ async function searchContainer() {
           statusLabel,
           step: getLastFlag(result.data.result?.containers[0].status)
             .descriptionCn,
-          status: result.data.result?.containers[0].status,
+          status: status,
+          routeName: '欧洲直航',
+          totalDays,
+          routePorts,
           // 初始化 nodes 数组结构
           nodes: [
             {
@@ -902,7 +985,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
                 >
                   <div>
                     <span class="progress-time-label">{{ time.label }}:</span>
-                    {{ time.value }}
+                    {{ time.value.substring(0, 10) }}
                   </div>
                 </span>
               </div>
@@ -942,8 +1025,12 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
         </div>
       </Card>
 
+
+
+      <h1 style="text-align: center;color: #999;">⬇️⬇️⬇️⬇️⬇️⬇️⬇️下方数据按飞驼查询数据显示⬇️⬇️⬇️⬇️⬇️⬇️⬇️</h1>
+
       <Card :bordered="false" class="waybill-card">
-        <span class="waybill-status-label">{{ ft_waybill.statusLabel }}</span>
+        <span class="waybill-status-label">查询结果显示：{{ ft_waybill.statusLabel }}</span>
         <!-- 横向进度条 - 箭头连线 -->
         <div class="shipping-progress">
           <!-- 左侧：公司名称 -->
@@ -978,7 +1065,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
                 >
                   <div>
                     <span class="progress-time-label">{{ time.label }}:</span>
-                    {{ time.value }}
+                    {{ time.value.substring(0, 10) }}
                   </div>
                 </span>
               </div>
@@ -1018,12 +1105,21 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
         </div>
       </Card>
 
+      <!-- 飞驼原始数据流图 -->
+      <RouteMap
+        v-if="ft_waybill.routePorts && ft_waybill.routePorts.length > 0"
+        :ports="ft_waybill.routePorts"
+        :total-days="ft_waybill.totalDays || 0"
+        :route-name="ft_waybill.routeName || '航线'"
+      />
+
+      <!-- 飞驼原始数据流 -->
       <Card :bordered="false" class="waybill-card">
         <h1><span class="waybill-status-label">飞驼原始数据</span></h1>
         <div style="display: flex">
           <div
             style="flex: 1"
-            v-for="(status, idx) in ft_waybill.status?.reverse()"
+            v-for="(status, idx) in ft_waybill.status"
             :key="idx"
           >
             <div style="display: grid" id="status-{{ idx }}">
@@ -1200,6 +1296,38 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
             </div>
           </div>
         </div>
+
+
+        <div class="detail-grid">
+        <div class="detail-item">
+          <span class="detail-label">MBL号</span>
+          <AInput v-model:value="editForm.billNo" placeholder="请输入MBL号" />
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">集装箱号</span>
+          <AInput
+            v-model:value="editForm.containerNo"
+            placeholder="请输入集装箱号"
+            style="flex: 1"
+          />
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">船公司代码</span>
+          <AInput
+            v-model:value="editForm.carrierCode"
+            placeholder="请输入船公司代码"
+          />
+        </div>
+        <!-- <div class="detail-item">
+          <span class="detail-label">箱号和船公司必填</span>
+          <Button type="primary" @click="searchContainer">
+            <template #icon>
+              <IconifyIcon icon="lucide:search" />
+            </template>
+            查询飞驼数据
+          </Button>
+        </div> -->
+      </div>
 
         <div class="detail-actions">
           <Button @click="cancelEdit">取消</Button>

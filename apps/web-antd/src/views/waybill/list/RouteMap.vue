@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 // 港口节点数据
 interface RoutePort {
@@ -9,6 +9,8 @@ interface RoutePort {
   isEsti?: string; // Y=预计(灰色), N=实际
   isCompleted?: boolean;
   isCurrent?: boolean;
+  eventPlace?: string; // 事件发生地点
+  transportMode?: string; // 运输方式（如海运、空运等）
 }
 
 interface Props {
@@ -24,22 +26,80 @@ const props = withDefaults(defineProps<Props>(), {
 
 const containerRef = ref<HTMLElement>();
 const containerWidth = ref(900);
+const portDotRefs = ref<Record<number, HTMLElement>>({});
+const measuredPortCoords = ref<Record<number, { x: number; y: number }>>({});
 
 const PORTS_PER_ROW = 5;
 const ROW_HEIGHT = 128; // 行高（与 getPortCoords 中的计算一致）
 
+interface DisplayPort {
+  port: RoutePort;
+  globalIndex: number;
+}
+
+interface ArrowSegmentInfo {
+  anchorIndex: number;
+  neighborIndex: number;
+  pointX: number;
+  pointY: number;
+  angle: number;
+  shouldExtendPath: boolean;
+  pathExtension: string;
+}
+
 // 将港口分组为行
-const portRows = computed<RoutePort[][]>(() => {
-  const rows: RoutePort[][] = [];
+const portRows = computed<DisplayPort[][]>(() => {
+  const rows: DisplayPort[][] = [];
   for (let i = 0; i < props.ports.length; i += PORTS_PER_ROW) {
-    rows.push(props.ports.slice(i, i + PORTS_PER_ROW));
+    const rowIndex = Math.floor(i / PORTS_PER_ROW);
+    const row = props.ports.slice(i, i + PORTS_PER_ROW).map((port, offset) => ({
+      port,
+      globalIndex: i + offset,
+    }));
+
+    // 1-based 奇数行(0-based 偶数行)从左到右，偶数行从右到左
+    rows.push(rowIndex % 2 === 0 ? row : row.toReversed());
   }
   return rows;
 });
 
-// 获取全局索引
-const getGlobalIndex = (rowIndex: number, portIndex: number): number => {
-  return rowIndex * PORTS_PER_ROW + portIndex;
+const setPortDotRef = (index: number, el: unknown) => {
+  let dom: HTMLElement | null = null;
+
+  if (el instanceof HTMLElement) {
+    dom = el;
+  } else if (el && typeof el === 'object' && '$el' in el) {
+    const componentEl = (el as { $el?: unknown }).$el;
+    if (componentEl instanceof HTMLElement) {
+      dom = componentEl;
+    }
+  }
+
+  if (dom) {
+    portDotRefs.value[index] = dom;
+    return;
+  }
+
+  delete portDotRefs.value[index];
+};
+
+const updateLayoutMetrics = () => {
+  if (!containerRef.value) return;
+
+  containerWidth.value = containerRef.value.clientWidth || 900;
+
+  const containerRect = containerRef.value.getBoundingClientRect();
+  const coords: Record<number, { x: number; y: number }> = {};
+
+  Object.entries(portDotRefs.value).forEach(([index, el]) => {
+    const rect = el.getBoundingClientRect();
+    coords[Number(index)] = {
+      x: rect.left - containerRect.left + rect.width / 2,
+      y: rect.top - containerRect.top + rect.height / 2,
+    };
+  });
+
+  measuredPortCoords.value = coords;
 };
 
 // 获取当前港口索引
@@ -72,23 +132,27 @@ const formatDate = (dateStr?: string): string => {
 const svgHeight = computed(() => {
   const rowCount = portRows.value.length;
   // port-name(42px) + port-dot-wrapper(16px) + segment-days(约20px) + 行间距(50px)
-  return rowCount * 128 + 20;
+  return rowCount * ROW_HEIGHT + 20;
 });
 
 // 计算端口坐标（圆点中心位置）
 const getPortCoords = (globalIndex: number) => {
+  const measured = measuredPortCoords.value[globalIndex];
+  if (measured) return measured;
+
   const padding = 60;
   const usableWidth = containerWidth.value - padding * 2;
   const spacing = usableWidth / (PORTS_PER_ROW - 1);
   
   const row = Math.floor(globalIndex / PORTS_PER_ROW);
-  const col = globalIndex % PORTS_PER_ROW;
+  const rawCol = globalIndex % PORTS_PER_ROW;
+  const col = row % 2 === 0 ? rawCol : PORTS_PER_ROW - 1 - rawCol;
 
   // 圆点中心的 y 坐标：
   // port-name min-height(36px) + margin-bottom(6px) + port-dot-wrapper一半(8px) = 50px
   // 每行增加：port-name(42px) + port-dot-wrapper(16px) + segment-days(20px) + margin-bottom(50px) = 128px
   const x = padding + col * spacing;
-  const y = 50 + row * 128;
+  const y = 50 + row * ROW_HEIGHT;
 
   return { x, y };
 };
@@ -108,16 +172,31 @@ const buildPath = (maxIndex: number) => {
       const currRow = Math.floor(i / PORTS_PER_ROW);
 
       if (currRow !== prevRow) {
-        // 换行：C型拐弯（从右侧绕回来的平滑弧形）
-        // 使用贝塞尔曲线形成更平滑的C型弧线
-        const verticalDistance = coords.y - prevCoords.y;
-        // 控制点1：从上一行最后一个点向右延伸，并向下移动一部分距离
-        const cp1x = prevCoords.x + 80;
-        const cp1y = prevCoords.y + verticalDistance * 0.5;
-        // 控制点2：在下一行第一个点的右侧，向上移动一部分距离
-        const cp2x = coords.x + 80;
-        const cp2y = coords.y - verticalDistance * 0.5;
-        path += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${coords.x} ${coords.y}`;
+        // 换行：使用双圆角连接（水平 -> 垂直 -> 水平），避免单段贝塞尔在拐点处突兀
+        const outerOffset = Math.max(64, Math.min(96, Math.abs(coords.x - prevCoords.x) * 0.2));
+        // 行间拐弯方向交替：1->2 行右拐，2->3 行左拐，之后重复
+        const isRightTurn = prevRow % 2 === 0;
+        const outerX = isRightTurn
+          ? Math.min(containerWidth.value - 20, Math.max(prevCoords.x, coords.x) + outerOffset)
+          : Math.max(20, Math.min(prevCoords.x, coords.x) - outerOffset);
+
+        const verticalDirection = coords.y >= prevCoords.y ? 1 : -1;
+        const verticalDistance = Math.abs(coords.y - prevCoords.y);
+        const cornerRadius = Math.max(12, Math.min(24, verticalDistance * 0.22));
+
+        const firstHorizontalDirection = outerX >= prevCoords.x ? 1 : -1;
+        const secondHorizontalDirection = coords.x >= outerX ? 1 : -1;
+
+        const firstCornerStartX = outerX - firstHorizontalDirection * cornerRadius;
+        const firstCornerEndY = prevCoords.y + verticalDirection * cornerRadius;
+        const secondCornerStartY = coords.y - verticalDirection * cornerRadius;
+        const secondCornerEndX = outerX + secondHorizontalDirection * cornerRadius;
+
+        path += ` L ${firstCornerStartX} ${prevCoords.y}`;
+        path += ` Q ${outerX} ${prevCoords.y}, ${outerX} ${firstCornerEndY}`;
+        path += ` L ${outerX} ${secondCornerStartY}`;
+        path += ` Q ${outerX} ${coords.y}, ${secondCornerEndX} ${coords.y}`;
+        path += ` L ${coords.x} ${coords.y}`;
       } else {
         // 同行：直线
         path += ` L ${coords.x} ${coords.y}`;
@@ -127,6 +206,76 @@ const buildPath = (maxIndex: number) => {
   return path;
 };
 
+const getArrowSegmentInfo = (): ArrowSegmentInfo | null => {
+  const anchorIndex = lastActualPortIndex.value;
+  if (anchorIndex < 0 || props.ports.length < 2) return null;
+
+  const preferredNeighbor = anchorIndex + 1;
+  const fallbackNeighbor = anchorIndex - 1;
+
+  let neighborIndex = -1;
+  if (preferredNeighbor < props.ports.length) {
+    neighborIndex = preferredNeighbor;
+  } else if (fallbackNeighbor >= 0) {
+    neighborIndex = fallbackNeighbor;
+  }
+
+  if (neighborIndex < 0) return null;
+
+  const fromIndex = Math.min(anchorIndex, neighborIndex);
+  const toIndex = Math.max(anchorIndex, neighborIndex);
+  const fromCoords = getPortCoords(fromIndex);
+  const toCoords = getPortCoords(toIndex);
+  const fromRow = Math.floor(fromIndex / PORTS_PER_ROW);
+  const toRow = Math.floor(toIndex / PORTS_PER_ROW);
+
+  const fromPort = props.ports[fromIndex];
+  const toPort = props.ports[toIndex];
+  const shouldExtendPath =
+    anchorIndex === currentPortIndex.value &&
+    toIndex === anchorIndex + 1 &&
+    fromPort?.isEsti === 'N' &&
+    toPort?.isEsti === 'Y';
+
+  let pointX = (fromCoords.x + toCoords.x) / 2;
+  let pointY = (fromCoords.y + toCoords.y) / 2;
+  let pointAngle = toCoords.x >= fromCoords.x ? 0 : 180;
+  let pathExtension = ` L ${pointX} ${pointY}`;
+
+  if (fromRow !== toRow) {
+    const outerOffset = Math.max(64, Math.min(96, Math.abs(toCoords.x - fromCoords.x) * 0.2));
+    const isRightTurn = fromRow % 2 === 0;
+    const outerX = isRightTurn
+      ? Math.min(containerWidth.value - 20, Math.max(fromCoords.x, toCoords.x) + outerOffset)
+      : Math.max(20, Math.min(fromCoords.x, toCoords.x) - outerOffset);
+    const verticalDirection = toCoords.y >= fromCoords.y ? 1 : -1;
+    const verticalDistance = Math.abs(toCoords.y - fromCoords.y);
+    const cornerRadius = Math.max(12, Math.min(24, verticalDistance * 0.22));
+    const firstHorizontalDirection = outerX >= fromCoords.x ? 1 : -1;
+    const firstCornerStartX = outerX - firstHorizontalDirection * cornerRadius;
+    const firstCornerEndY = fromCoords.y + verticalDirection * cornerRadius;
+    const secondCornerStartY = toCoords.y - verticalDirection * cornerRadius;
+
+    pointX = outerX;
+    pointY = (firstCornerEndY + secondCornerStartY) / 2;
+    pointAngle = verticalDirection > 0 ? 90 : -90;
+    pathExtension =
+      ` L ${firstCornerStartX} ${fromCoords.y}` +
+      ` Q ${outerX} ${fromCoords.y}, ${outerX} ${firstCornerEndY}` +
+      ` L ${pointX} ${pointY}`;
+  }
+
+  return {
+    anchorIndex,
+    neighborIndex,
+    pointX,
+    pointY,
+    angle: pointAngle,
+    shouldExtendPath,
+    pathExtension,
+  };
+};
+
 // 背景路径（全部港口）
 const backgroundPath = computed(() => buildPath(props.ports.length - 1));
 
@@ -134,30 +283,57 @@ const backgroundPath = computed(() => buildPath(props.ports.length - 1));
 const completedPath = computed(() => {
   const idx = currentPortIndex.value;
   if (idx <= 0) return '';
-  return buildPath(idx);
-});
 
-// 箭头位置（在最后一个已完成线段的中点）
-const arrowTransform = computed(() => {
-  const idx = currentPortIndex.value;
-  if (idx <= 0) return '';
+  // const lastCompletedIndex = props.ports.findLastIndex(p => p.isCompleted && !p.isCurrent);
 
-  const prevCoords = getPortCoords(idx - 1);
-  const currCoords = getPortCoords(idx);
+  // return buildPath(lastCompletedIndex);
+  const path = buildPath(idx);
+  const arrowInfo = getArrowSegmentInfo();
 
-  const midX = (prevCoords.x + currCoords.x) / 2;
-  const midY = (prevCoords.y + currCoords.y) / 2;
-  const angle = Math.atan2(currCoords.y - prevCoords.y, currCoords.x - prevCoords.x) * 180 / Math.PI;
-
-  return `translate(${midX}, ${midY}) rotate(${angle})`;
-});
-
-// 测量容器宽度
-onMounted(() => {
-  if (containerRef.value) {
-    containerWidth.value = containerRef.value.clientWidth || 900;
+  if (!arrowInfo || !arrowInfo.shouldExtendPath || arrowInfo.anchorIndex !== idx) {
+    return path;
   }
+
+  return `${path}${arrowInfo.pathExtension}`;
 });
+
+// 最后一个实际节点：优先当前节点，其次最后一个已完成节点
+const lastActualPortIndex = computed(() => {
+  if (currentPortIndex.value >= 0) return currentPortIndex.value;
+
+  for (let i = props.ports.length - 1; i >= 0; i--) {
+    if (props.ports[i]?.isCompleted) return i;
+  }
+
+  return -1;
+});
+
+// 箭头位置：放在最后一个实际节点相邻线段上；方向按行奇偶固定
+const arrowTransform = computed(() => {
+  const arrowInfo = getArrowSegmentInfo();
+  if (!arrowInfo) return '';
+
+  return `translate(${arrowInfo.pointX}, ${arrowInfo.pointY}) rotate(${arrowInfo.angle})`;
+});
+
+// 测量容器和圆点中心点
+onMounted(() => {
+  updateLayoutMetrics();
+  window.addEventListener('resize', updateLayoutMetrics);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateLayoutMetrics);
+});
+
+watch(
+  () => props.ports,
+  async () => {
+    await nextTick();
+    updateLayoutMetrics();
+  },
+  { deep: true, immediate: true },
+);
 </script>
 
 <template>
@@ -192,21 +368,30 @@ onMounted(() => {
           class="route-row"
         >
           <div
-            v-for="(port, portIndex) in row"
-            :key="`${rowIndex}-${portIndex}`"
+            v-for="item in row"
+            :key="item.globalIndex"
             class="port-item"
           >
             <!-- 港口名称（上方） -->
             <div class="port-name">
-              <span class="port-name-cn">{{ port.nameCn }}</span>
-              <span class="port-name-en">{{ port.nameEn }}</span>
+              <span class="port-name-cn">{{ item.port.nameCn }}</span>
+              <span class="port-name-en">{{ item.port.nameEn }}</span>
+              <span v-if="item.port.eventPlace" class="port-meta-item">
+                {{ item.port.eventPlace }}
+              </span>
+              <span v-if="item.port.transportMode" class="port-meta-item">
+                {{ item.port.transportMode }}
+              </span>
             </div>
 
             <!-- 港口圆点 -->
-            <div class="port-dot-wrapper">
-              <div class="port-dot" :class="getPortClass(port)">
+            <div
+              class="port-dot-wrapper"
+              :ref="(el) => setPortDotRef(item.globalIndex, el)"
+            >
+              <div class="port-dot" :class="getPortClass(item.port)">
                 <svg
-                  v-if="port.isCompleted"
+                  v-if="item.port.isCompleted"
                   width="8"
                   height="8"
                   viewBox="0 0 8 8"
@@ -225,11 +410,10 @@ onMounted(() => {
 
             <!-- 航行天数/日期 -->
             <div
-              v-if="getGlobalIndex(rowIndex, portIndex) < ports.length - 1"
               class="segment-days"
-              :class="getDaysClass(port)"
+              :class="getDaysClass(item.port)"
             >
-              {{ formatDate(port.eventTime) }}
+              {{ formatDate(item.port.eventTime) }}
             </div>
           </div>
         </div>
@@ -243,7 +427,7 @@ onMounted(() => {
         :viewBox="`0 0 ${containerWidth} ${svgHeight}`"
       >
         <defs>
-          <linearGradient id="routeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <linearGradient id="routeGrad" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
             <stop offset="0%" stop-color="#1677ff" />
             <stop offset="100%" stop-color="#4096ff" />
           </linearGradient>
@@ -366,7 +550,7 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   margin-bottom: 6px;
-  min-height: 36px;
+  min-height: 56px;
 }
 
 .port-name-cn {
@@ -384,6 +568,16 @@ onMounted(() => {
   letter-spacing: 0.3px;
   line-height: 1.4;
   white-space: nowrap;
+}
+
+.port-meta-item {
+  font-size: 11px;
+  color: #8c8c8c;
+  line-height: 1.3;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 港口圆点 */

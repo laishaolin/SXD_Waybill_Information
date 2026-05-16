@@ -55,12 +55,16 @@ interface RoutePort {
   isEsti?: string; // Y=预计(灰色), N=实际
   isCompleted?: boolean;
   isCurrent?: boolean;
+  eventPlace?: string; // 事件发生地点
+  transportMode?: string; // 运输方式（如海运、空运等）
 }
 
 interface ftStatus {
   eventTime: string;
   descriptionCn: string;
   isEsti: string; // N就代表实际发生的节点,Y就说明是 预计发生的
+  eventPlace?: string; // 事件发生地点（飞驼返回）
+  transportMode?: string; // 运输方式（飞驼返回）
 }
 
 // 飞驼各阶段与对应的日期
@@ -193,22 +197,59 @@ function extractRoutePorts(status: ftStatus[]): RoutePort[] {
   if (!status || status.length === 0) return [];
 
   // 按时间排序状态
-  const sorted = [...status].sort(
+  let sorted = [...status].sort(
     (a, b) =>
       new Date(a.eventTime || '').getTime() -
       new Date(b.eventTime || '').getTime(),
   );
 
+  const hasRail = sorted.some(s => s.transportMode === 'RAIL');// 判断是否包含铁路
+  let newSorted: ftStatus[] = [];// 存储处理后的状态列表
+
+  for (let i = 0; i < sorted.length; i++) { 
+    let current = sorted[i];
+    if (hasRail && current?.descriptionCn === '铁运到站' && current?.eventTime === null) {// 【有铁路段】铁运到站日期 = 铁路到站日期或交货地抵达日期
+      current.eventTime = statusHasFlag(sorted, '交货地抵达')?.eventTime || '';
+    }
+
+    if (hasRail && current?.descriptionCn === '抵港' && current?.eventTime === null) {// 【无铁路段】抵港日期 = 抵港日期或交货地抵达日期
+      current.eventTime = statusHasFlag(sorted, '交货地抵达')?.eventTime || '';
+    }
+
+    // 过滤铁运到站、抵港、交货地抵达、铁路免柜期
+    if(hasRail && current && (current?.descriptionCn == "铁运到站" || current?.descriptionCn == "抵港" || current?.descriptionCn == "交货地抵达" || current?.descriptionCn == "铁路免柜期")){
+       continue;
+    } else if (!hasRail && current?.descriptionCn === '交货地抵达') {// 【无铁路段】抵港日期 = 抵港日期或交货地抵达日期
+      continue;
+    }
+
+    if(current?.descriptionCn === '还空箱' && current?.isEsti === 'Y'){// 还空箱如果是预计的，就不显示
+      continue;
+    }else if(current?.descriptionCn === '提柜(货)' && current?.isEsti === 'Y'){// 提柜(货)如果是预计的，就不显示
+      continue;
+    }
+    
+    if(current){
+      newSorted.push(current);
+    }
+
+  }
+
+  sorted=[]
+
   // 获取最后一个实际发生的状态索引
   let lastActualIndex = -1;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    if (sorted[i]?.isEsti === 'N') {
+  for (let i = newSorted.length - 1; i >= 0; i--) {
+    if (newSorted[i]?.isEsti === 'N') {// 获取最后一个实际发生的状态索引
       lastActualIndex = i;
       break;
     }
   }
 
-  return sorted.map((item, index) => {
+
+  // newSorted = newSorted.filter(s => s.descriptionCn === '铁路免柜期' || s.descriptionCn === '交货地抵达' || s.descriptionCn === '预计还空' || s.descriptionCn === '预计提重');// 过滤铁路免柜期
+
+  return newSorted.map((item, index) => {
     // 已完成：实际发生的节点 (isEsti === 'N')
     const isCompleted = item.isEsti === 'N';
     // 当前状态：最后一个实际发生的节点
@@ -221,6 +262,8 @@ function extractRoutePorts(status: ftStatus[]): RoutePort[] {
       isEsti: item.isEsti,
       isCompleted,
       isCurrent,
+      eventPlace: item.eventPlace,
+      transportMode: item.transportMode || 'NULL',
     };
   });
 }
@@ -233,7 +276,7 @@ const waybills = ref<Waybill[]>([
     originPort: 'YANTIAN',
     destPort: 'ROTTERDAM',
     currentStatus: 1,
-    statusLabel: '1、等待到达起运港',
+    statusLabel: '静态示例：1、等待到达起运港',
     goodsReadyDate: '2026-05-01',
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
@@ -276,7 +319,7 @@ const waybills = ref<Waybill[]>([
     originPort: 'YANTIAN',
     destPort: 'ROTTERDAM',
     currentStatus: 2,
-    statusLabel: '2、已到达起运港',
+    statusLabel: '静态示例：2、已到达起运港',
     goodsReadyDate: '2026-05-01',
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
@@ -319,7 +362,7 @@ const waybills = ref<Waybill[]>([
     originPort: 'YANTIAN',
     destPort: 'ROTTERDAM',
     currentStatus: 3,
-    statusLabel: '3、前往目的港途中',
+    statusLabel: '静态示例：3、前往目的港途中',
     goodsReadyDate: '2026-05-01',
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
@@ -362,7 +405,7 @@ const waybills = ref<Waybill[]>([
     originPort: 'YANTIAN',
     destPort: 'ROTTERDAM',
     currentStatus: 4,
-    statusLabel: '4、已到达目的港',
+    statusLabel: '静态示例：4、已到达目的港',
     goodsReadyDate: '2026-05-01',
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
@@ -405,7 +448,7 @@ const waybills = ref<Waybill[]>([
     originPort: 'YANTIAN',
     destPort: 'ROTTERDAM',
     currentStatus: 5,
-    statusLabel: '5、尾端派送',
+    statusLabel: '静态示例：5、尾端派送',
     goodsReadyDate: '2026-05-01',
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
@@ -451,7 +494,7 @@ const waybills = ref<Waybill[]>([
     originPort: 'YANTIAN',
     destPort: 'ROTTERDAM',
     currentStatus: 6,
-    statusLabel: '6、已送达',
+    statusLabel: '静态示例：6、已送达',
     goodsReadyDate: '2026-05-01',
     emptyPickupDate: '2026-05-05',
     etd: '2026-05-11',
@@ -1030,7 +1073,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
       <h1 style="text-align: center;color: #999;">⬇️⬇️⬇️⬇️⬇️⬇️⬇️下方数据按飞驼查询数据显示⬇️⬇️⬇️⬇️⬇️⬇️⬇️</h1>
 
       <Card :bordered="false" class="waybill-card">
-        <span class="waybill-status-label">查询结果显示：{{ ft_waybill.statusLabel }}</span>
+        <span class="waybill-status-label">动态显示飞驼查询结果：{{ ft_waybill.statusLabel }}</span>
         <!-- 横向进度条 - 箭头连线 -->
         <div class="shipping-progress">
           <!-- 左侧：公司名称 -->
@@ -1115,7 +1158,7 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
 
       <!-- 飞驼原始数据流 -->
       <Card :bordered="false" class="waybill-card">
-        <h1><span class="waybill-status-label">飞驼原始数据</span></h1>
+        <h1><span class="waybill-status-label">未加工的飞驼原始数据</span></h1>
         <div style="display: flex">
           <div
             style="flex: 1"

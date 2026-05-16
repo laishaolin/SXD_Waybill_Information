@@ -17,6 +17,8 @@ interface Props {
   ports: RoutePort[];
   totalDays?: number;
   routeName?: string;
+  companyName?: string; // 公司名称
+  recipientName?: string; // 收货人名称
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -344,6 +346,17 @@ watch(
       <span class="route-note">
         备注：以下为船公司官方公告航线路径，船舶实际靠泊情况请参考 船舶定位 卫星AIS动态数据。
       </span>
+    </div>
+
+    <div style="display: grid;grid-template-columns: 1fr 1fr;margin-bottom: 16px; color: #3c3c3c;background: #25b9e930;gap:8px;padding: 16px;border-radius: 8px;">
+        <div style="display: grid;">
+          <div>发货人：{{ props.companyName }}</div>
+          <div>发货人的详情地址、发货人的详情地址、发货人的详情地址、发货人的详情地址</div>
+        </div>
+        <div style="display: grid;">
+          <div>收货人：{{ props.recipientName }}</div>
+          <div>收货人的详情地址、收货人的详情地址、收货人的详情地址、收货人的详情地址</div>
+        </div>
     </div>
 
     <!-- 航线标签 -->

@@ -1154,6 +1154,8 @@ function getSegmentStatus(waybill: Waybill, segmentIndex: number): string {
         :ports="ft_waybill.routePorts"
         :total-days="ft_waybill.totalDays || 0"
         :route-name="ft_waybill.routeName || '航线'"
+        :company-name="ft_waybill.companyName"
+        :recipient-name="ft_waybill.recipientName"
       />
 
       <!-- 飞驼原始数据流 -->
